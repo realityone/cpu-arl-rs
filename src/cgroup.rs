@@ -3,7 +3,7 @@ use libc;
 use std::{
     fs,
     io::{self, BufRead},
-    num, path, result, time,
+    num, path, result,
 };
 use sysinfo;
 use thiserror;
@@ -20,7 +20,6 @@ struct CPUUsageItem {
 pub struct CGroupCPUStatProvider {
     root_path: path::PathBuf,
     v2: bool,
-    cpu_update_interval: time::Duration,
     sys_cpu: sysinfo::System,
     meta: CGroupMetadata,
     metrics: [CPUUsageItem; 2],
@@ -51,10 +50,9 @@ impl CGroupCPUStatProvider {
             let by_cfs = Self::get_cfs_cpu_quota_unit_cores(root_path.clone(), v2)?;
             by_cpuset.min(by_cfs)
         };
-        let mut provider = Self {
+        let provider = Self {
             root_path,
             v2,
-            cpu_update_interval: cpu::DEFAULT_MINIMUM_CPU_UPDATE_INTERVAL,
             sys_cpu: sys,
             meta: CGroupMetadata {
                 quota: quota,
@@ -75,10 +73,6 @@ impl CGroupCPUStatProvider {
             refresh_index: 0,
         };
         return Ok(provider);
-    }
-
-    pub fn set_cpu_update_interval(&mut self, interval: time::Duration) {
-        self.cpu_update_interval = interval;
     }
 
     fn get_cpu_cores(
@@ -188,35 +182,20 @@ impl CGroupCPUStatProvider {
 }
 
 impl cpu::CPUStatProvider for CGroupCPUStatProvider {
-    fn get_cpu_stat(&mut self) -> cpu::CPUStat {
+    fn refresh_cpu_stat(&mut self) {
         self.refresh_cpu_stat();
-        std::thread::sleep(self.cpu_update_interval);
-        self.refresh_cpu_stat();
-
-        let prev = &self.metrics[0];
-        let curr = &self.metrics[1];
-        if curr.system_usage != curr.acct_usage {
-            let usage = ((curr.acct_usage - prev.acct_usage) * self.meta.cores * 100) as f64
-                / ((curr.system_usage - prev.system_usage) as f64 * self.meta.quota);
-            return cpu::CPUStat { usage: usage };
-        }
-        cpu::CPUStat { usage: 0.0 }
     }
 
-    // async fn async_get_cpu_stat(&mut self) -> cpu::CPUStat {
-    //     self.refresh_cpu_stat();
-    //     tokio::time::sleep(self.cpu_update_interval).await;
-    //     self.refresh_cpu_stat();
-
-    //     let prev = &self.metrics[0];
-    //     let curr = &self.metrics[1];
-    //     if curr.system_usage != curr.acct_usage {
-    //         let usage = ((curr.acct_usage - prev.acct_usage) * self.meta.cores * 100) as f64
-    //             / ((curr.system_usage - prev.system_usage) as f64 * self.meta.quota);
-    //         return cpu::CPUStat { usage: usage };
-    //     }
-    //     cpu::CPUStat { usage: 0.0 }
-    // }
+    fn get_cpu_stat(&self) -> cpu::CPUStat {
+        let prev = &self.metrics[0];
+        let curr = &self.metrics[1];
+        if curr.system_usage == prev.system_usage {
+            return cpu::CPUStat { usage: 0.0 };
+        }
+        let usage = ((curr.acct_usage - prev.acct_usage) * self.meta.cores * 100) as f64
+            / ((curr.system_usage - prev.system_usage) as f64 * self.meta.quota);
+        return cpu::CPUStat { usage: usage };
+    }
 
     fn get_cpu_info(&self) -> cpu::CPUInfo {
         cpu::CPUInfo {
@@ -288,12 +267,10 @@ impl LinuxStatReader {
 
 #[cfg(test)]
 mod test {
-    use std::path;
+    use super::*;
 
     #[test]
     fn test_parse_as_cpuset_cpus_array() {
-        use super::LinuxStatReader;
-
         /*
         // Supported formats:
         // 7
@@ -328,6 +305,10 @@ mod test {
             super::CGroupCPUStatProvider::new(path::PathBuf::from("/sys/fs/cgroup/"), false)
                 .unwrap();
         {
+            provider.refresh_cpu_stat();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            provider.refresh_cpu_stat();
+
             for _ in 1..5 {
                 let stat = provider.get_cpu_stat();
                 assert!(stat.usage > 0.0);
@@ -343,20 +324,26 @@ mod test {
         }
     }
 
-    // #[tokio::test]
-    // async fn async_cgroup_cpu_stat_provider() {
-    //     use crate::cpu::CPUStatProvider;
-    //     let mut provider =
-    //         super::CGroupCPUStatProvider::new(path::PathBuf::from("/sys/fs/cgroup/"), false)
-    //             .unwrap();
-    //     {
-    //         for _ in 1..5 {
-    //             let stat = provider.async_get_cpu_stat().await;
-    //             assert!(stat.usage > 0.0);
-    //             println!("Async CPU stat: {:?}", stat);
-    //         }
-    //     }
-    // }
+    #[tokio::test]
+    async fn async_cgroup_cpu_stat_provider() {
+        let provider =
+            super::CGroupCPUStatProvider::new(path::PathBuf::from("/sys/fs/cgroup/"), false)
+                .unwrap();
+        let mut loader = crate::cpu::AsyncCPUStatLoader::new(
+            Box::new(provider),
+            std::time::Duration::from_millis(500),
+        );
+        loader.start();
+        {
+            let mut ctr = crate::cpu::CPUStat { usage: 0.0 };
+            for _ in 0..5 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                loader.load_cpu_stat_to(&mut ctr);
+                println!("Async CGroup CPU stat: {:?}", ctr);
+                assert!(ctr.usage > 0.0);
+            }
+        }
+    }
 
     #[test]
     fn test_get_clock_cycle() {
