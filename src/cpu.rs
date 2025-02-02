@@ -1,9 +1,7 @@
+use std::sync::{Arc, RwLock};
 use std::time;
 use sysinfo;
 use thiserror;
-
-pub(crate) const DEFAULT_MINIMUM_CPU_UPDATE_INTERVAL: time::Duration =
-    time::Duration::from_millis(500);
 
 #[derive(Debug)]
 pub struct CPUStat {
@@ -17,14 +15,12 @@ pub struct CPUInfo {
 }
 
 pub trait CPUStatProvider {
-    fn get_cpu_stat(&mut self) -> CPUStat;
-    // async fn async_get_cpu_stat(&mut self) -> CPUStat;
-    fn async_get_cpu_stat(&mut self) -> impl std::future::Future<Output = CPUStat> + Send;
+    fn refresh_cpu_stat(&mut self);
+    fn get_cpu_stat(&self) -> CPUStat;
     fn get_cpu_info(&self) -> CPUInfo;
 }
 
 pub struct MachineCPUStatProvider {
-    cpu_update_interval: time::Duration,
     sys_cpu: sysinfo::System,
 
     frequency: u64,
@@ -48,32 +44,19 @@ impl MachineCPUStatProvider {
             .map(|cpu| cpu.frequency())
             .ok_or(MachineCPUStatProviderError::InvalidCPUFrequencyError)?;
         Ok(Self {
-            cpu_update_interval: DEFAULT_MINIMUM_CPU_UPDATE_INTERVAL,
             sys_cpu: sys,
             frequency: frequency,
             cpu_cores: cpu_cores,
         })
     }
-
-    pub fn set_cpu_update_interval(&mut self, interval: time::Duration) {
-        self.cpu_update_interval = interval;
-    }
 }
 
 impl CPUStatProvider for MachineCPUStatProvider {
-    fn get_cpu_stat(&mut self) -> CPUStat {
+    fn refresh_cpu_stat(&mut self) {
         self.sys_cpu.refresh_cpu_usage();
-        std::thread::sleep(self.cpu_update_interval);
-        self.sys_cpu.refresh_cpu_usage();
-        CPUStat {
-            usage: self.sys_cpu.global_cpu_usage() as f64,
-        }
     }
 
-    async fn async_get_cpu_stat(&mut self) -> CPUStat {
-        self.sys_cpu.refresh_cpu_usage();
-        tokio::time::sleep(self.cpu_update_interval).await;
-        self.sys_cpu.refresh_cpu_usage();
+    fn get_cpu_stat(&self) -> CPUStat {
         CPUStat {
             usage: self.sys_cpu.global_cpu_usage() as f64,
         }
@@ -87,15 +70,76 @@ impl CPUStatProvider for MachineCPUStatProvider {
     }
 }
 
+pub struct AsyncCPUStatLoader {
+    provider: Arc<RwLock<Box<dyn CPUStatProvider + Send + Sync>>>,
+    last: Arc<RwLock<CPUStat>>,
+    ticker_interval: time::Duration,
+    stop_tx: Option<tokio::sync::mpsc::Sender<()>>,
+}
+
+impl AsyncCPUStatLoader {
+    pub fn new(
+        provider: Box<dyn CPUStatProvider + Send + Sync>,
+        ticker_interval: time::Duration,
+    ) -> Self {
+        Self {
+            provider: Arc::new(RwLock::new(provider)),
+            last: Arc::new(RwLock::new(CPUStat { usage: 0.0 })),
+            ticker_interval,
+            stop_tx: None,
+        }
+    }
+
+    pub fn start(&mut self) {
+        let last_ptr = self.last.clone();
+        let provider = self.provider.clone();
+        let mut ticker = tokio::time::interval(self.ticker_interval);
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<()>(1);
+        self.stop_tx = Some(stop_tx);
+        tokio::spawn(async move {
+            provider.write().unwrap().refresh_cpu_stat();
+            ticker.tick().await;
+            provider.write().unwrap().refresh_cpu_stat();
+            last_ptr.write().unwrap().usage = provider.read().unwrap().get_cpu_stat().usage;
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        provider.write().unwrap().refresh_cpu_stat();
+                        last_ptr.write().unwrap().usage = provider.read().unwrap().get_cpu_stat().usage;
+                    }
+                    _ = stop_rx.recv() => {
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn stop(&mut self) {
+        if let Some(tx) = &self.stop_tx {
+            let _ = tx.send(());
+        }
+    }
+
+    pub fn load_cpu_stat_to(&mut self, dst: &mut CPUStat) {
+        let val = self.last.read().unwrap();
+        dst.usage = val.usage;
+    }
+}
+
 mod test {
+    use super::*;
 
     #[test]
     fn machine_cpu_stat_provider() {
-        use crate::cpu::CPUStatProvider;
-
-        let mut provider = super::MachineCPUStatProvider::new().unwrap();
+        let mut provider = MachineCPUStatProvider::new().unwrap();
         {
             for _ in 0..5 {
+                provider.refresh_cpu_stat();
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                provider.refresh_cpu_stat();
+
                 let stat = provider.get_cpu_stat();
                 println!("CPU stat: {:?}", stat);
                 assert!(stat.usage > 0.0);
@@ -111,14 +155,18 @@ mod test {
     }
 
     #[tokio::test]
-    async fn async_machine_cpu_stat_provider() {
-        use crate::cpu::CPUStatProvider;
-        let mut provider = super::MachineCPUStatProvider::new().unwrap();
+    async fn async_load_machine_cpu_stat() {
+        let provider = MachineCPUStatProvider::new().unwrap();
+        let mut loader =
+            AsyncCPUStatLoader::new(Box::new(provider), time::Duration::from_millis(500));
+        loader.start();
         {
+            let mut ctr = CPUStat { usage: 0.0 };
             for _ in 0..5 {
-                let stat = provider.async_get_cpu_stat().await;
-                println!("Async CPU stat: {:?}", stat);
-                assert!(stat.usage > 0.0);
+                tokio::time::sleep(time::Duration::from_millis(500)).await;
+                loader.load_cpu_stat_to(&mut ctr);
+                println!("Async CPU stat: {:?}", ctr);
+                assert!(ctr.usage > 0.0);
             }
         }
     }

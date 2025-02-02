@@ -203,20 +203,20 @@ impl cpu::CPUStatProvider for CGroupCPUStatProvider {
         cpu::CPUStat { usage: 0.0 }
     }
 
-    async fn async_get_cpu_stat(&mut self) -> cpu::CPUStat {
-        self.refresh_cpu_stat();
-        tokio::time::sleep(self.cpu_update_interval).await;
-        self.refresh_cpu_stat();
+    // async fn async_get_cpu_stat(&mut self) -> cpu::CPUStat {
+    //     self.refresh_cpu_stat();
+    //     tokio::time::sleep(self.cpu_update_interval).await;
+    //     self.refresh_cpu_stat();
 
-        let prev = &self.metrics[0];
-        let curr = &self.metrics[1];
-        if curr.system_usage != curr.acct_usage {
-            let usage = ((curr.acct_usage - prev.acct_usage) * self.meta.cores * 100) as f64
-                / ((curr.system_usage - prev.system_usage) as f64 * self.meta.quota);
-            return cpu::CPUStat { usage: usage };
-        }
-        cpu::CPUStat { usage: 0.0 }
-    }
+    //     let prev = &self.metrics[0];
+    //     let curr = &self.metrics[1];
+    //     if curr.system_usage != curr.acct_usage {
+    //         let usage = ((curr.acct_usage - prev.acct_usage) * self.meta.cores * 100) as f64
+    //             / ((curr.system_usage - prev.system_usage) as f64 * self.meta.quota);
+    //         return cpu::CPUStat { usage: usage };
+    //     }
+    //     cpu::CPUStat { usage: 0.0 }
+    // }
 
     fn get_cpu_info(&self) -> cpu::CPUInfo {
         cpu::CPUInfo {
@@ -343,20 +343,20 @@ mod test {
         }
     }
 
-    #[tokio::test]
-    async fn async_cgroup_cpu_stat_provider() {
-        use crate::cpu::CPUStatProvider;
-        let mut provider =
-            super::CGroupCPUStatProvider::new(path::PathBuf::from("/sys/fs/cgroup/"), false)
-                .unwrap();
-        {
-            for _ in 1..5 {
-                let stat = provider.async_get_cpu_stat().await;
-                assert!(stat.usage > 0.0);
-                println!("Async CPU stat: {:?}", stat);
-            }
-        }
-    }
+    // #[tokio::test]
+    // async fn async_cgroup_cpu_stat_provider() {
+    //     use crate::cpu::CPUStatProvider;
+    //     let mut provider =
+    //         super::CGroupCPUStatProvider::new(path::PathBuf::from("/sys/fs/cgroup/"), false)
+    //             .unwrap();
+    //     {
+    //         for _ in 1..5 {
+    //             let stat = provider.async_get_cpu_stat().await;
+    //             assert!(stat.usage > 0.0);
+    //             println!("Async CPU stat: {:?}", stat);
+    //         }
+    //     }
+    // }
 
     #[test]
     fn test_get_clock_cycle() {
