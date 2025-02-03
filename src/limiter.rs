@@ -1,7 +1,7 @@
 use once_cell::sync::Lazy;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Mutex, RwLock,
+    Arc, Mutex, RwLock,
 };
 use std::time;
 
@@ -29,7 +29,7 @@ enum CPUStatProviderName {
 }
 
 #[derive(Debug, Clone)]
-struct Options {
+pub struct Options {
     provider: CPUStatProviderName,
     window: time::Duration,
     bucket: usize,
@@ -68,7 +68,7 @@ static GLOBAL_CPU_LOADER: Lazy<RwLock<Option<cpu::AsyncEMACPUUsageLoader>>> =
     Lazy::new(|| RwLock::new(None));
 
 impl ARLLimiter {
-    fn new(opts: Options) -> Self {
+    pub fn new(opts: Options) -> Self {
         match opts.provider {
             CPUStatProviderName::Machine => {
                 let mut loader = cpu::AsyncEMACPUUsageLoader::new(
@@ -237,20 +237,21 @@ impl ARLLimiter {
         drop
     }
 
-    fn allow(&self) -> Result<impl FnOnce() + use<'_>, ARLLimitError> {
+    pub fn allow(self: &Arc<Self>) -> Result<Box<impl FnMut() + Send + 'static>, ARLLimitError> {
         if self.should_drop() {
             return Err(ARLLimitError::LimitExceededError);
         }
         self.in_flight.fetch_add(1, Ordering::Relaxed);
         let start = time::Instant::now();
-        Ok(move || {
+        let self_clone = Arc::clone(self);
+        Ok(Box::new(move || {
             let rt = start.elapsed().as_millis() as i64;
             if rt > 0 {
-                self.rt_stat.add(rt).unwrap_or(());
+                self_clone.rt_stat.add(rt).unwrap_or(());
             }
-            self.in_flight.fetch_sub(1, Ordering::Relaxed);
-            self.pass_stat.add(1).unwrap_or(());
-        })
+            self_clone.in_flight.fetch_sub(1, Ordering::Relaxed);
+            self_clone.pass_stat.add(1).unwrap_or(());
+        }))
     }
 
     fn stat(&self) -> StatSnapshot {
@@ -265,7 +266,7 @@ impl ARLLimiter {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum ARLLimitError {
+pub enum ARLLimitError {
     #[error("CPU ARL Limit Exceeded")]
     LimitExceededError,
 }

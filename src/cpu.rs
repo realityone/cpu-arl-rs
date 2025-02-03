@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 use std::time;
 use sysinfo;
 use thiserror;
+use tokio::runtime;
 
 #[derive(Debug)]
 pub struct CPUStat {
@@ -85,7 +86,7 @@ impl AsyncEMACPUUsageLoader {
         ticker_interval: time::Duration,
     ) -> Self {
         Self {
-            handle,
+            handle: handle,
             provider: Arc::new(RwLock::new(provider)),
             last: Arc::new(RwLock::new(0.0)),
             ticker_interval,
