@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::time;
+use std::{iter, time};
 
 pub(crate) mod policy;
 pub(crate) mod window;
@@ -18,7 +18,7 @@ pub trait Aggregation {
 
 pub trait RollingCounter: Metric + Aggregation {
     fn timespan(&self) -> usize;
-    fn reduce(&self, f: fn(&mut window::BucketIterator) -> f64) -> f64;
+    fn reduce(&self, f: fn(&mut window::BucketIterator) -> f64, iter_max: Option<usize>) -> f64;
 }
 
 pub struct RollingCounterStorage {
@@ -99,19 +99,19 @@ fn sum(iter: &mut window::BucketIterator) -> f64 {
 impl Aggregation for RollingCounterStorage {
     fn min(&self) -> f64 {
         let policy = self.policy.lock().unwrap();
-        policy.reduce(min)
+        policy.reduce(min, None)
     }
     fn max(&self) -> f64 {
         let policy = self.policy.lock().unwrap();
-        policy.reduce(max)
+        policy.reduce(max, None)
     }
     fn avg(&self) -> f64 {
         let policy = self.policy.lock().unwrap();
-        policy.reduce(avg)
+        policy.reduce(avg, None)
     }
     fn sum(&self) -> f64 {
         let policy = self.policy.lock().unwrap();
-        policy.reduce(sum)
+        policy.reduce(sum, None)
     }
 }
 
@@ -139,9 +139,9 @@ impl RollingCounter for RollingCounterStorage {
         policy.timespan()
     }
 
-    fn reduce(&self, f: fn(&mut window::BucketIterator) -> f64) -> f64 {
+    fn reduce(&self, f: fn(&mut window::BucketIterator) -> f64, iter_max: Option<usize>) -> f64 {
         let policy = self.policy.lock().unwrap();
-        policy.reduce(f)
+        policy.reduce(f, iter_max)
     }
 }
 
@@ -203,7 +203,7 @@ mod tests {
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                        let sum = r2.clone().write().unwrap().reduce(sum);
+                        let sum = r2.clone().write().unwrap().reduce(sum, None);
                         assert!(sum > 0.0);
                     }
                 }

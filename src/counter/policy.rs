@@ -31,12 +31,9 @@ impl RollingPolicy {
     }
 
     pub fn timespan(&self) -> usize {
-        let elapsed = self.last_append_time.elapsed().as_secs_f64();
-        let span = elapsed / self.opts.bucket_duration.as_secs_f64();
-        if span > 0.0 {
-            return span as usize;
-        }
-        self.size()
+        let elapsed = self.last_append_time.elapsed().as_nanos();
+        let span = elapsed / self.opts.bucket_duration.as_nanos();
+        span as usize
     }
 
     fn apply<F>(&mut self, f: F, val: f64)
@@ -66,7 +63,7 @@ impl RollingPolicy {
         self.apply(Window::add, val);
     }
 
-    pub fn reduce(&self, f: fn(&mut BucketIterator) -> f64) -> f64 {
+    pub fn reduce(&self, f: fn(&mut BucketIterator) -> f64, iter_max: Option<usize>) -> f64 {
         let timespan = self.timespan();
         let count = self.size() - timespan;
         if count > 0 {
@@ -74,7 +71,9 @@ impl RollingPolicy {
             if offset >= self.size() {
                 offset -= self.size();
             }
-            let mut iter = self.window.iterator(offset, count);
+            let mut iter = self
+                .window
+                .iterator(offset, count.min(iter_max.unwrap_or(count)));
             return f(&mut iter);
         }
         0.0

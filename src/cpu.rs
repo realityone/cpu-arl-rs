@@ -58,7 +58,7 @@ impl CPUStatProvider for MachineCPUStatProvider {
 
     fn get_cpu_stat(&self) -> CPUStat {
         CPUStat {
-            usage: self.sys_cpu.global_cpu_usage() as f64,
+            usage: self.sys_cpu.global_cpu_usage() as f64 * 10.0f64,
         }
     }
 
@@ -70,15 +70,15 @@ impl CPUStatProvider for MachineCPUStatProvider {
     }
 }
 
-pub struct AsyncCPUStatLoader {
+pub struct AsyncEMACPUUsageLoader {
     handle: tokio::runtime::Handle,
     provider: Arc<RwLock<Box<dyn CPUStatProvider + Send + Sync>>>,
-    last: Arc<RwLock<CPUStat>>,
+    last: Arc<RwLock<f64>>,
     ticker_interval: time::Duration,
     stop_tx: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
-impl AsyncCPUStatLoader {
+impl AsyncEMACPUUsageLoader {
     pub fn new(
         handle: tokio::runtime::Handle,
         provider: Box<dyn CPUStatProvider + Send + Sync>,
@@ -87,10 +87,14 @@ impl AsyncCPUStatLoader {
         Self {
             handle,
             provider: Arc::new(RwLock::new(provider)),
-            last: Arc::new(RwLock::new(CPUStat { usage: 0.0 })),
+            last: Arc::new(RwLock::new(0.0)),
             ticker_interval,
             stop_tx: None,
         }
+    }
+
+    fn decay() -> f64 {
+        0.95
     }
 
     pub fn start(&mut self) {
@@ -103,13 +107,19 @@ impl AsyncCPUStatLoader {
             provider.write().unwrap().refresh_cpu_stat();
             ticker.tick().await;
             provider.write().unwrap().refresh_cpu_stat();
-            last_ptr.write().unwrap().usage = provider.read().unwrap().get_cpu_stat().usage;
 
+            {
+                let current_usage = provider.read().unwrap().get_cpu_stat().usage;
+                let prev_cpu_usage = 0.0;
+                *last_ptr.write().unwrap() = prev_cpu_usage*Self::decay() + current_usage*(1.0-Self::decay());
+            }  
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
                         provider.write().unwrap().refresh_cpu_stat();
-                        last_ptr.write().unwrap().usage = provider.read().unwrap().get_cpu_stat().usage;
+                        let current_usage = provider.read().unwrap().get_cpu_stat().usage;
+                        let prev_cpu_usage = *last_ptr.read().unwrap() as f64;
+                        *last_ptr.write().unwrap() = prev_cpu_usage*Self::decay() + current_usage*(1.0-Self::decay());
                     }
                     _ = stop_rx.recv() => {
                         return;
@@ -125,9 +135,8 @@ impl AsyncCPUStatLoader {
         }
     }
 
-    pub fn load_cpu_stat_to(&mut self, dst: &mut CPUStat) {
-        let val = self.last.read().unwrap();
-        dst.usage = val.usage;
+    pub fn get_cpu_usage(&self) -> f64 {    
+        self.last.read().unwrap().clone()
     }
 }
 
@@ -160,19 +169,18 @@ mod test {
     #[tokio::test]
     async fn async_load_machine_cpu_stat() {
         let provider = MachineCPUStatProvider::new().unwrap();
-        let mut loader = AsyncCPUStatLoader::new(
+        let mut loader = AsyncEMACPUUsageLoader::new(
             tokio::runtime::Handle::current(),
             Box::new(provider),
             time::Duration::from_millis(500),
         );
         loader.start();
         {
-            let mut ctr = CPUStat { usage: 0.0 };
             for _ in 0..5 {
-                tokio::time::sleep(time::Duration::from_millis(500)).await;
-                loader.load_cpu_stat_to(&mut ctr);
-                println!("Async CPU stat: {:?}", ctr);
-                assert!(ctr.usage > 0.0);
+                tokio::time::sleep(time::Duration::from_millis(100)).await;
+                let usage = loader.get_cpu_usage();
+                println!("Async CPU usage: {:?}", loader.get_cpu_usage());
+                assert!(usage > 0.0);
             }
         }
     }

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug)]
 pub(crate) struct Bucket {
     pub points: Vec<f64>,
-    count: i64,
+    count: usize,
     next: Option<Arc<Mutex<Bucket>>>,
 }
 
@@ -14,6 +14,10 @@ impl Bucket {
             count: 0,
             next: None,
         }
+    }
+
+    pub fn count(&self) -> usize {
+        self.count
     }
 
     fn append(&mut self, val: f64) {
@@ -128,10 +132,10 @@ impl Iterator for BucketIterator {
         if self.iterated_count >= self.count {
             return None;
         }
-
-        if let Some(current) = self.cur.clone() {
+        if let Some(current) = self.cur.take() {
+            let next_bucket = current.lock().unwrap().next.clone();
+            self.cur = next_bucket;
             self.iterated_count += 1;
-            self.cur = current.lock().unwrap().next();
             return Some(current);
         }
         None

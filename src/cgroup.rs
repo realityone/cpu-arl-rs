@@ -194,7 +194,9 @@ impl cpu::CPUStatProvider for CGroupCPUStatProvider {
         }
         let usage = ((curr.acct_usage - prev.acct_usage) * self.meta.cores * 100) as f64
             / ((curr.system_usage - prev.system_usage) as f64 * self.meta.quota);
-        return cpu::CPUStat { usage: usage };
+        return cpu::CPUStat {
+            usage: usage * 10.0f64,
+        };
     }
 
     fn get_cpu_info(&self) -> cpu::CPUInfo {
