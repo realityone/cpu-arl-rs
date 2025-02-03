@@ -71,6 +71,7 @@ impl CPUStatProvider for MachineCPUStatProvider {
 }
 
 pub struct AsyncCPUStatLoader {
+    handle: tokio::runtime::Handle,
     provider: Arc<RwLock<Box<dyn CPUStatProvider + Send + Sync>>>,
     last: Arc<RwLock<CPUStat>>,
     ticker_interval: time::Duration,
@@ -79,10 +80,12 @@ pub struct AsyncCPUStatLoader {
 
 impl AsyncCPUStatLoader {
     pub fn new(
+        handle: tokio::runtime::Handle,
         provider: Box<dyn CPUStatProvider + Send + Sync>,
         ticker_interval: time::Duration,
     ) -> Self {
         Self {
+            handle,
             provider: Arc::new(RwLock::new(provider)),
             last: Arc::new(RwLock::new(CPUStat { usage: 0.0 })),
             ticker_interval,
@@ -96,7 +99,7 @@ impl AsyncCPUStatLoader {
         let mut ticker = tokio::time::interval(self.ticker_interval);
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<()>(1);
         self.stop_tx = Some(stop_tx);
-        tokio::spawn(async move {
+        self.handle.spawn(async move {
             provider.write().unwrap().refresh_cpu_stat();
             ticker.tick().await;
             provider.write().unwrap().refresh_cpu_stat();
@@ -157,8 +160,11 @@ mod test {
     #[tokio::test]
     async fn async_load_machine_cpu_stat() {
         let provider = MachineCPUStatProvider::new().unwrap();
-        let mut loader =
-            AsyncCPUStatLoader::new(Box::new(provider), time::Duration::from_millis(500));
+        let mut loader = AsyncCPUStatLoader::new(
+            tokio::runtime::Handle::current(),
+            Box::new(provider),
+            time::Duration::from_millis(500),
+        );
         loader.start();
         {
             let mut ctr = CPUStat { usage: 0.0 };

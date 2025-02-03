@@ -197,7 +197,6 @@ mod tests {
 
         let mut rx2 = tx.subscribe();
         tokio::spawn(async move {
-            let mut i = 1;
             loop {
                 tokio::select! {
                     _ = rx2.recv() => {
@@ -205,15 +204,13 @@ mod tests {
                     }
                     _ = tokio::time::sleep(Duration::from_millis(200)) => {
                         let sum = r2.clone().write().unwrap().reduce(sum);
-                        i += 1;
-                        let ts = time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-                        println!("sum/{}/{}: {}", i, ts, sum);
+                        assert!(sum > 0.0);
                     }
                 }
             }
         });
 
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
         tx.send(()).unwrap();
     }
 }
