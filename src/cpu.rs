@@ -177,9 +177,9 @@ mod test {
         loader.start();
         {
             for _ in 0..5 {
-                tokio::time::sleep(time::Duration::from_millis(100)).await;
+                tokio::time::sleep(time::Duration::from_millis(800)).await;
                 let usage = loader.get_cpu_usage();
-                println!("Async CPU usage: {:?}", loader.get_cpu_usage());
+                println!("Async CPU usage: {:?}", usage);
                 assert!(usage > 0.0);
             }
         }

@@ -208,7 +208,7 @@ impl cpu::CPUStatProvider for CGroupCPUStatProvider {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum StatReadError {
+pub(crate) enum StatReadError {
     #[error("Failed to read file: {0}")]
     IoError(#[from] io::Error),
 
@@ -331,18 +331,18 @@ mod test {
         let provider =
             super::CGroupCPUStatProvider::new(path::PathBuf::from("/sys/fs/cgroup/"), false)
                 .unwrap();
-        let mut loader = crate::cpu::AsyncCPUStatLoader::new(
+        let mut loader = crate::cpu::AsyncEMACPUUsageLoader::new(
+            tokio::runtime::Handle::current(),
             Box::new(provider),
             std::time::Duration::from_millis(500),
         );
         loader.start();
         {
-            let mut ctr = crate::cpu::CPUStat { usage: 0.0 };
             for _ in 0..5 {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                loader.load_cpu_stat_to(&mut ctr);
-                println!("Async CGroup CPU stat: {:?}", ctr);
-                assert!(ctr.usage > 0.0);
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                let usage = loader.get_cpu_usage();
+                println!("Async CGroup CPU stat: {:?}", usage);
+                assert!(usage > 0.0);
             }
         }
     }

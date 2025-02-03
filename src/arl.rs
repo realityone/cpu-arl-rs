@@ -5,8 +5,7 @@ use std::sync::{
 };
 use std::time;
 
-use crate::counter;
-use crate::cpu;
+use crate::{counter, cpu};
 
 #[derive(Debug, Clone)]
 struct StatSnapshot {
@@ -82,7 +81,22 @@ impl ARLLimiter {
             }
             #[cfg(all(target_os = "linux", feature = "cgroup"))]
             CPUStatProviderName::CGroup => {
-                todo!();
+                use crate::cgroup;
+                use std::path;
+
+                let mut loader = cpu::AsyncEMACPUUsageLoader::new(
+                    tokio::runtime::Handle::current(),
+                    Box::new(
+                        cgroup::CGroupCPUStatProvider::new(
+                            path::PathBuf::from("/sys/fs/cgroup/"),
+                            false,
+                        )
+                        .unwrap(),
+                    ),
+                    time::Duration::from_millis(500),
+                );
+                loader.start();
+                GLOBAL_CPU_LOADER.write().unwrap().replace(loader);
             }
             _ => {
                 unimplemented!("Unsupported CPU stat provider: {:?}", opts.provider);
