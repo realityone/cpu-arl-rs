@@ -23,7 +23,7 @@ struct CounterCache {
 }
 
 #[derive(Debug, Clone)]
-enum CPUStatProviderName {
+pub enum CPUStatProviderName {
     Machine,
     CGroup,
 }
@@ -46,6 +46,14 @@ impl Default for Options {
             cpu_threshold: 800,
             cpu_quota: 0.0,
         }
+    }
+}
+
+impl Options {
+    pub fn cgroup_default() -> Self {
+        let mut opts = Self::default();
+        opts.provider = CPUStatProviderName::CGroup;
+        return opts;
     }
 }
 
