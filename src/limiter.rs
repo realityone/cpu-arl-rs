@@ -30,7 +30,6 @@ pub enum CPUStatProviderName {
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    provider: CPUStatProviderName,
     window: time::Duration,
     bucket: usize,
     cpu_threshold: u64,
@@ -40,20 +39,11 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            provider: CPUStatProviderName::Machine,
             window: time::Duration::from_secs(10),
             bucket: 100,
             cpu_threshold: 800,
             cpu_quota: 0.0,
         }
-    }
-}
-
-impl Options {
-    pub fn cgroup_default() -> Self {
-        let mut opts = Self::default();
-        opts.provider = CPUStatProviderName::CGroup;
-        return opts;
     }
 }
 
@@ -72,53 +62,8 @@ pub struct ARLLimiter {
     opts: Options,
 }
 
-static GLOBAL_CPU_LOADER: Lazy<RwLock<Option<cpu::AsyncEMACPUUsageLoader>>> =
-    Lazy::new(|| RwLock::new(None));
-
 impl ARLLimiter {
-    pub fn new(opts: Options) -> Self {
-        match opts.provider {
-            CPUStatProviderName::Machine => {
-                let mut loader = cpu::AsyncEMACPUUsageLoader::new(
-                    tokio::runtime::Handle::current(),
-                    Box::new(cpu::MachineCPUStatProvider::new().unwrap()),
-                    time::Duration::from_millis(500),
-                );
-                loader.start();
-                GLOBAL_CPU_LOADER.write().unwrap().replace(loader);
-            }
-            #[cfg(all(target_os = "linux", feature = "cgroup"))]
-            CPUStatProviderName::CGroup => {
-                use crate::cgroup;
-                use std::path;
-
-                let mut loader = cpu::AsyncEMACPUUsageLoader::new(
-                    tokio::runtime::Handle::current(),
-                    Box::new(
-                        cgroup::CGroupCPUStatProvider::new(
-                            path::PathBuf::from("/sys/fs/cgroup/"),
-                            false,
-                        )
-                        .unwrap(),
-                    ),
-                    time::Duration::from_millis(500),
-                );
-                loader.start();
-                GLOBAL_CPU_LOADER.write().unwrap().replace(loader);
-            }
-            _ => {
-                unimplemented!("Unsupported CPU stat provider: {:?}", opts.provider);
-            }
-        }
-
-        let cpu_getter = || {
-            GLOBAL_CPU_LOADER
-                .read()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .get_cpu_usage()
-        };
+    pub fn new(cpu_getter: Box<dyn Fn() -> f64 + Send + Sync>, opts: Options) -> Self {
         let bucket_duration = opts.window / opts.bucket as u32;
         Self {
             cpu_getter: Box::new(cpu_getter),
@@ -156,7 +101,7 @@ impl ARLLimiter {
             .rt_stat
             .reduce(
                 |iter| {
-                    let mut result = std::f64::MAX;
+                    let mut result = std::u16::MAX as f64;
                     for bucket in iter {
                         if bucket.lock().unwrap().points.is_empty() {
                             continue;
@@ -288,25 +233,29 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn test_bbr() {
+    async fn test_bbr_limiter() {
         let options = Options {
             window: time::Duration::from_secs(5),
             bucket: 50,
             cpu_threshold: 100,
             ..Options::default()
         };
-        let limiter = Arc::new(ARLLimiter::new(options));
+        let test_cpu_getter = Box::new(|| rand::rng().random_range(0.0..30.0) + 80.0);
+        let limiter = Arc::new(ARLLimiter::new(test_cpu_getter, options));
 
         let drop_counter = Arc::new(AtomicU64::new(0));
+        let succ_counter = Arc::new(AtomicU64::new(0));
         let mut handles = vec![];
 
         for _ in 0..100 {
             let limiter = limiter.clone();
             let drop_counter = Arc::clone(&drop_counter);
+            let succ_counter = Arc::clone(&succ_counter);
             handles.push(tokio::spawn(async move {
                 for _ in 0..300 {
                     let sleep_time = { rand::rng().random_range(1..100) };
-                    if let Ok(done) = limiter.allow() {
+                    if let Ok(mut done) = limiter.allow() {
+                        succ_counter.fetch_add(1, Ordering::Relaxed);
                         tokio::time::sleep(time::Duration::from_millis(sleep_time)).await;
                         done();
                     } else {
@@ -319,7 +268,11 @@ mod tests {
         for handle in handles {
             handle.await.unwrap();
         }
-        println!("drop: {}", drop_counter.load(Ordering::Relaxed));
+        println!(
+            "drop: {}, success: {}",
+            drop_counter.load(Ordering::Relaxed),
+            succ_counter.load(Ordering::Relaxed)
+        );
     }
 
     #[tokio::test]
@@ -330,8 +283,9 @@ mod tests {
             cpu_threshold: 800,
             ..Options::default()
         };
+        let test_cpu_getter = Box::new(|| 100.0);
         let bucket_duration = options.window / options.bucket as u32;
-        let limiter = ARLLimiter::new(options);
+        let limiter = ARLLimiter::new(test_cpu_getter, options);
 
         for i in 0..10 {
             for j in (i * 10 + 1)..=(i * 10 + 10) {
@@ -350,9 +304,10 @@ mod tests {
             ..Options::default()
         };
         let bucket_duration = options.window / options.bucket as u32;
-        let mut limiter = ARLLimiter::new(options);
+        let test_cpu_getter = Box::new(|| 100.0);
+        let mut limiter = ARLLimiter::new(test_cpu_getter, options);
         limiter.rt_stat = Box::new(counter::RollingCounterStorage::new(10, bucket_duration));
-        assert_eq!(limiter.min_rt(), std::f64::MAX as u64);
+        assert_eq!(limiter.min_rt(), std::u16::MAX as u64);
     }
 
     #[tokio::test]
@@ -363,8 +318,9 @@ mod tests {
             cpu_threshold: 800,
             ..Options::default()
         };
+        let test_cpu_getter = Box::new(|| 100.0);
         let bucket_duration = options.window / options.bucket as u32;
-        let limiter = ARLLimiter::new(options);
+        let limiter = ARLLimiter::new(test_cpu_getter, options);
 
         for i in 0..10 {
             for j in (i * 10 + 1)..=(i * 10 + 5) {
@@ -393,7 +349,8 @@ mod tests {
             ..Options::default()
         };
         let bucket_duration = options.window / options.bucket as u32;
-        let mut limiter = ARLLimiter::new(options);
+        let test_cpu_getter = Box::new(|| 100.0);
+        let mut limiter = ARLLimiter::new(test_cpu_getter, options);
 
         let pass_stat = counter::RollingCounterStorage::new(10, bucket_duration);
         let rt_stat = counter::RollingCounterStorage::new(10, bucket_duration);
@@ -421,7 +378,8 @@ mod tests {
             ..Options::default()
         };
         let bucket_duration = options.window / options.bucket as u32;
-        let limiter = ARLLimiter::new(options);
+        let test_cpu_getter = Box::new(|| 100.0);
+        let limiter = ARLLimiter::new(test_cpu_getter, options);
 
         for i in 1..=10 {
             limiter.pass_stat.add(i * 100).unwrap();
@@ -435,7 +393,8 @@ mod tests {
             cpu_threshold: 800,
             ..Options::default()
         };
-        let limiter = ARLLimiter::new(options);
+        let test_cpu_getter = Box::new(|| 100.0);
+        let limiter = ARLLimiter::new(test_cpu_getter, options);
         assert_eq!(limiter.max_pass(), 1);
     }
 
@@ -448,7 +407,8 @@ mod tests {
             ..Options::default()
         };
         let bucket_duration = options.window / options.bucket as u32;
-        let limiter = ARLLimiter::new(options);
+        let test_cpu_getter = Box::new(|| 100.0);
+        let limiter = ARLLimiter::new(test_cpu_getter, options);
 
         limiter.pass_stat.add(50).unwrap();
         tokio::time::sleep(bucket_duration / 2).await;
@@ -464,7 +424,8 @@ mod tests {
             ..Options::default()
         };
         let bucket_duration = options.window / options.bucket as u32;
-        let mut limiter = ARLLimiter::new(options);
+        let test_cpu_getter = Box::new(|| 100.0);
+        let mut limiter = ARLLimiter::new(test_cpu_getter, options);
 
         let pass_stat = counter::RollingCounterStorage::new(10, bucket_duration);
         let rt_stat = counter::RollingCounterStorage::new(10, bucket_duration);
