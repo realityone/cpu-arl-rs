@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicI8, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time;
 use sysinfo;
@@ -71,26 +72,16 @@ impl CPUStatProvider for MachineCPUStatProvider {
     }
 }
 
-pub struct AsyncEMACPUUsageLoader {
-    handle: tokio::runtime::Handle,
+pub struct EMACPUUsageLoader {
     provider: Arc<RwLock<Box<dyn CPUStatProvider + Send + Sync>>>,
-    last: Arc<RwLock<f64>>,
-    ticker_interval: time::Duration,
-    stop_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    last: Arc<AtomicU64>,
 }
 
-impl AsyncEMACPUUsageLoader {
-    pub fn new(
-        handle: tokio::runtime::Handle,
-        provider: Box<dyn CPUStatProvider + Send + Sync>,
-        ticker_interval: time::Duration,
-    ) -> Self {
+impl EMACPUUsageLoader {
+    pub fn new(provider: Box<dyn CPUStatProvider + Send + Sync>) -> Self {
         Self {
-            handle: handle,
             provider: Arc::new(RwLock::new(provider)),
-            last: Arc::new(RwLock::new(0.0)),
-            ticker_interval,
-            stop_tx: None,
+            last: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -98,46 +89,19 @@ impl AsyncEMACPUUsageLoader {
         0.95
     }
 
-    pub fn start(&mut self) {
-        let last_ptr = self.last.clone();
-        let provider = self.provider.clone();
-        let mut ticker = tokio::time::interval(self.ticker_interval);
-        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<()>(1);
-        self.stop_tx = Some(stop_tx);
-        self.handle.spawn(async move {
-            provider.write().unwrap().refresh_cpu_stat();
-            ticker.tick().await;
-            provider.write().unwrap().refresh_cpu_stat();
+    // calling this function periodically to refresh the CPU usage
+    pub fn refresh_cpu_usage(&self) {
+        self.provider.write().unwrap().refresh_cpu_stat();
+        let current_usage = self.provider.read().unwrap().get_cpu_stat().usage;
+        let prev_cpu_usage = self.last.load(Ordering::Relaxed) as f64;
 
-            {
-                let current_usage = provider.read().unwrap().get_cpu_stat().usage;
-                let prev_cpu_usage = 0.0;
-                *last_ptr.write().unwrap() = prev_cpu_usage*Self::decay() + current_usage*(1.0-Self::decay());
-            }  
-            loop {
-                tokio::select! {
-                    _ = ticker.tick() => {
-                        provider.write().unwrap().refresh_cpu_stat();
-                        let current_usage = provider.read().unwrap().get_cpu_stat().usage;
-                        let prev_cpu_usage = *last_ptr.read().unwrap() as f64;
-                        *last_ptr.write().unwrap() = prev_cpu_usage*Self::decay() + current_usage*(1.0-Self::decay());
-                    }
-                    _ = stop_rx.recv() => {
-                        return;
-                    }
-                }
-            }
-        });
+        let current_ema_usage =
+            prev_cpu_usage * Self::decay() + current_usage * (1.0 - Self::decay());
+        self.last.store(current_ema_usage as u64, Ordering::Relaxed);
     }
 
-    pub fn stop(&mut self) {
-        if let Some(tx) = &self.stop_tx {
-            let _ = tx.send(());
-        }
-    }
-
-    pub fn get_cpu_usage(&self) -> f64 {    
-        self.last.read().unwrap().clone()
+    pub fn get_cpu_usage(&self) -> f64 {
+        self.last.load(Ordering::Relaxed) as f64
     }
 }
 
@@ -170,12 +134,21 @@ mod test {
     #[tokio::test]
     async fn async_load_machine_cpu_stat() {
         let provider = MachineCPUStatProvider::new().unwrap();
-        let mut loader = AsyncEMACPUUsageLoader::new(
-            tokio::runtime::Handle::current(),
-            Box::new(provider),
-            time::Duration::from_millis(500),
-        );
-        loader.start();
+        let loader = Arc::new(EMACPUUsageLoader::new(Box::new(provider)));
+
+        {
+            let loader = Arc::clone(&loader);
+            loader.refresh_cpu_usage();
+            tokio::time::sleep(time::Duration::from_millis(500)).await;
+            loader.refresh_cpu_usage();
+            tokio::time::sleep(time::Duration::from_millis(500)).await;
+            tokio::spawn(async move {
+                loop {
+                    loader.refresh_cpu_usage();
+                    tokio::time::sleep(time::Duration::from_millis(500)).await;
+                }
+            });
+        }
         {
             for _ in 0..5 {
                 tokio::time::sleep(time::Duration::from_millis(800)).await;
