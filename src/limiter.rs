@@ -86,6 +86,10 @@ impl ARLLimiter {
         }
     }
 
+    pub fn in_flight(&self) -> u64 {
+        self.in_flight.load(Ordering::Relaxed)
+    }
+
     fn timespan(&self, last_time: time::Instant) -> usize {
         (last_time.elapsed().as_nanos() / self.bucket_duration.as_nanos()) as usize
     }
@@ -129,7 +133,7 @@ impl ARLLimiter {
         raw_min_rt
     }
 
-    fn max_in_flight(&self) -> u64 {
+    pub fn max_in_flight(&self) -> u64 {
         (((self.max_pass() * self.min_rt() * self.bucket_per_second) as f64) / 1000.0).ceil() as u64
     }
 
@@ -159,7 +163,7 @@ impl ARLLimiter {
         raw_max_pass
     }
 
-    fn get_cpu_usage(&self) -> u64 {
+    pub fn get_cpu_usage(&self) -> u64 {
         (self.cpu_getter)() as u64
     }
 
