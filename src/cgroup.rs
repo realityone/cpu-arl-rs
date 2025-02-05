@@ -208,7 +208,7 @@ impl cpu::CPUStatProvider for CGroupCPUStatProvider {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum StatReadError {
+pub enum StatReadError {
     #[error("Failed to read file: {0}")]
     IoError(#[from] io::Error),
 
