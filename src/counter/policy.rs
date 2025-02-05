@@ -65,15 +65,16 @@ impl RollingPolicy {
 
     pub fn reduce(&self, f: fn(&mut BucketIterator) -> f64, iter_max: Option<usize>) -> f64 {
         let timespan = self.timespan();
-        let count = self.size() - timespan;
+        let count = self.size() as i64 - timespan as i64;
         if count > 0 {
             let mut offset = self.offset + timespan + 1;
             if offset >= self.size() {
                 offset -= self.size();
             }
-            let mut iter = self
-                .window
-                .iterator(offset, count.min(iter_max.unwrap_or(count)));
+            let mut iter = self.window.iterator(
+                offset,
+                count.min(iter_max.unwrap_or(std::usize::MAX) as i64) as usize,
+            );
             return f(&mut iter);
         }
         0.0
