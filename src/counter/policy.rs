@@ -71,10 +71,13 @@ impl RollingPolicy {
             if offset >= self.size() {
                 offset -= self.size();
             }
-            let mut iter = self.window.iterator(
-                offset,
-                count.min(iter_max.unwrap_or(std::usize::MAX) as i64) as usize,
-            );
+            let mut iter = self.window.iterator(offset, {
+                if let Some(max) = iter_max {
+                    max.min(count as usize)
+                } else {
+                    count as usize
+                }
+            });
             return f(&mut iter);
         }
         0.0
