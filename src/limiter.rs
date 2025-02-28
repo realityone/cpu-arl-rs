@@ -30,10 +30,10 @@ pub enum CPUStatProviderName {
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    window: time::Duration,
-    bucket: usize,
-    cpu_threshold: u64,
-    cpu_quota: f64,
+    pub window: time::Duration,
+    pub bucket: usize,
+    pub cpu_threshold: u64,
+    pub cpu_quota: f64,
 }
 
 impl Default for Options {
