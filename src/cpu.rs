@@ -1,9 +1,7 @@
-use std::sync::atomic::{AtomicI8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time;
 use sysinfo;
 use thiserror;
-use tokio::runtime;
 
 #[derive(Debug)]
 pub struct CPUStat {
@@ -105,8 +103,13 @@ impl EMACPUUsageLoader {
     }
 }
 
+unsafe impl Sync for EMACPUUsageLoader {}
+unsafe impl Send for EMACPUUsageLoader {}
+
+#[cfg(test)]
 mod test {
     use super::*;
+    use std::time;
 
     #[test]
     fn machine_cpu_stat_provider() {

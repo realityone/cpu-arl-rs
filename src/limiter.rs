@@ -1,19 +1,18 @@
-use once_cell::sync::Lazy;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc, Mutex, RwLock,
+    Arc, Mutex,
 };
 use std::time;
 
-use crate::{counter, cpu};
+use crate::counter;
 
 #[derive(Debug, Clone)]
-struct StatSnapshot {
-    cpu: u64,
-    in_flight: u64,
-    max_in_flight: u64,
-    min_rt: u64,
-    max_pass: u64,
+pub struct StatSnapshot {
+    pub cpu: u64,
+    pub in_flight: u64,
+    pub max_in_flight: u64,
+    pub min_rt: u64,
+    pub max_pass: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +33,8 @@ pub struct Options {
     pub bucket: usize,
     pub cpu_threshold: u64,
     pub cpu_quota: f64,
+    bucket_duration: time::Duration,
+    bucket_per_second: u64,
 }
 
 impl Default for Options {
@@ -43,18 +44,17 @@ impl Default for Options {
             bucket: 100,
             cpu_threshold: 800,
             cpu_quota: 0.0,
+            bucket_duration: time::Duration::from_secs(0),
+            bucket_per_second: 0,
         }
     }
 }
 
 pub struct ARLLimiter {
-    cpu_getter: Box<dyn Fn() -> f64 + Send + Sync>,
-    pass_stat: Box<dyn counter::RollingCounter + Send + Sync>,
-    rt_stat: Box<dyn counter::RollingCounter + Send + Sync>,
+    cpu_getter: Box<dyn Fn() -> f64>,
+    pass_stat: Box<dyn counter::RollingCounter>,
+    rt_stat: Box<dyn counter::RollingCounter>,
     in_flight: AtomicU64,
-    bucket_per_second: u64,
-    bucket_duration: time::Duration,
-
     prev_drop_time: Mutex<Option<time::Instant>>,
     max_pass_cache: Mutex<Option<CounterCache>>,
     min_rt_cache: Mutex<Option<CounterCache>>,
@@ -63,26 +63,26 @@ pub struct ARLLimiter {
 }
 
 impl ARLLimiter {
-    pub fn new(cpu_getter: Box<dyn Fn() -> f64 + Send + Sync>, opts: Options) -> Self {
-        let bucket_duration = opts.window / opts.bucket as u32;
+    pub fn new(cpu_getter: Box<dyn Fn() -> f64>, opts: Options) -> Self {
+        let mut opts = opts;
+        opts.bucket_duration = opts.window / opts.bucket as u32;
+        opts.bucket_per_second =
+            (time::Duration::from_secs(1).as_nanos() / opts.bucket_duration.as_nanos()) as u64;
         Self {
             cpu_getter: Box::new(cpu_getter),
             pass_stat: Box::new(counter::RollingCounterStorage::new(
                 opts.bucket,
-                bucket_duration,
+                opts.bucket_duration,
             )),
             rt_stat: Box::new(counter::RollingCounterStorage::new(
                 opts.bucket,
-                bucket_duration,
+                opts.bucket_duration,
             )),
             in_flight: AtomicU64::new(0),
-            opts,
             max_pass_cache: Mutex::new(None),
             min_rt_cache: Mutex::new(None),
             prev_drop_time: Mutex::new(None),
-            bucket_per_second: (time::Duration::from_secs(1).as_nanos()
-                / bucket_duration.as_nanos()) as u64,
-            bucket_duration,
+            opts,
         }
     }
 
@@ -91,7 +91,7 @@ impl ARLLimiter {
     }
 
     fn timespan(&self, last_time: time::Instant) -> usize {
-        (last_time.elapsed().as_nanos() / self.bucket_duration.as_nanos()) as usize
+        (last_time.elapsed().as_nanos() / self.opts.bucket_duration.as_nanos()) as usize
     }
 
     pub fn min_rt(&self) -> u64 {
@@ -134,7 +134,8 @@ impl ARLLimiter {
     }
 
     pub fn max_in_flight(&self) -> u64 {
-        (((self.max_pass() * self.min_rt() * self.bucket_per_second) as f64) / 1000.0).ceil() as u64
+        (((self.max_pass() * self.min_rt() * self.opts.bucket_per_second) as f64) / 1000.0).ceil()
+            as u64
     }
 
     pub fn max_pass(&self) -> u64 {
@@ -211,7 +212,7 @@ impl ARLLimiter {
         }))
     }
 
-    fn stat(&self) -> StatSnapshot {
+    pub fn stat(&self) -> StatSnapshot {
         StatSnapshot {
             cpu: self.get_cpu_usage(),
             min_rt: self.min_rt(),
@@ -221,6 +222,9 @@ impl ARLLimiter {
         }
     }
 }
+
+unsafe impl Sync for ARLLimiter {}
+unsafe impl Send for ARLLimiter {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ARLLimitError {

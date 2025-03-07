@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::{iter, time};
+use std::time;
 
 pub(crate) mod policy;
 pub(crate) mod window;
@@ -34,6 +34,9 @@ impl RollingCounterStorage {
         }
     }
 }
+
+unsafe impl Sync for RollingCounterStorage {}
+unsafe impl Send for RollingCounterStorage {}
 
 fn min(iter: &mut window::BucketIterator) -> f64 {
     let mut result = 0.0;
@@ -148,7 +151,7 @@ impl RollingCounter for RollingCounterStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::RwLock;
+    use std::sync::atomic::{AtomicI64, Ordering};
     use std::time::Duration;
 
     #[test]
@@ -174,12 +177,9 @@ mod tests {
 
         let (tx, _) = broadcast::channel::<()>(1);
 
-        let r = Arc::new(RwLock::new(RollingCounterStorage::new(
-            3,
-            Duration::from_secs(1),
-        )));
-        let r1 = Arc::clone(&r);
-        let r2 = Arc::clone(&r);
+        let r = Arc::new(RollingCounterStorage::new(3, Duration::from_secs(3)));
+        let r1 = r.clone();
+        let r2 = r.clone();
 
         let mut rx1 = tx.subscribe();
         tokio::spawn(async move {
@@ -189,7 +189,7 @@ mod tests {
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_millis(5)) => {
-                        r1.clone().write().unwrap().add(1).unwrap();
+                        r1.add(1).unwrap();
                     }
                 }
             }
@@ -202,8 +202,8 @@ mod tests {
                     _ = rx2.recv() => {
                         break;
                     }
-                    _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                        let sum = r2.clone().write().unwrap().reduce(sum, None);
+                    _ = tokio::time::sleep(Duration::from_millis(7)) => {
+                        let sum = r2.reduce(sum, None);
                         assert!(sum > 0.0);
                     }
                 }
