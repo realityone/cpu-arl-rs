@@ -194,19 +194,19 @@ impl ARLLimiter {
         drop
     }
 
-    pub fn allow(self: &Arc<Self>) -> Result<Box<impl FnMut() + Send + 'static>, ARLLimitError> {
+    pub fn allow(self: &Arc<Self>) -> Result<Box<impl FnMut(u64) + Send + 'static>, ARLLimitError> {
         if self.should_drop() {
             return Err(ARLLimitError::LimitExceededError);
         }
         self.in_flight.fetch_add(1, Ordering::Relaxed);
         let start = time::Instant::now();
         let self_clone = Arc::clone(self);
-        Ok(Box::new(move || {
+        Ok(Box::new(move |count: u64| {
             let rt = start.elapsed().as_millis() as i64;
             if rt > 0 {
                 self_clone.rt_stat.add(rt).unwrap_or(());
             }
-            self_clone.in_flight.fetch_sub(1, Ordering::Relaxed);
+            self_clone.in_flight.fetch_sub(count, Ordering::Relaxed);
             self_clone.pass_stat.add(1).unwrap_or(());
         }))
     }
