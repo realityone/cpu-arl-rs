@@ -38,7 +38,7 @@ pub enum MachineCPUStatProviderError {
 impl MachineCPUStatProvider {
     pub fn new() -> Result<Self, MachineCPUStatProviderError> {
         let mut sys = sysinfo::System::new();
-        sys.refresh_all();
+        sys.refresh_cpu_all();
         let cpu_cores = sys.cpus().len() as u64;
         let frequency = sys
             .cpus()
