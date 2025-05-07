@@ -1,11 +1,10 @@
-use once_cell::sync::Lazy;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc, Mutex, RwLock,
+    Arc, Mutex,
 };
 use std::time;
 
-use crate::{counter, cpu};
+use crate::counter;
 
 #[derive(Debug, Clone)]
 struct StatSnapshot {

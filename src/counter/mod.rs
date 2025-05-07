@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::{iter, time};
+use std::time;
 
 pub(crate) mod policy;
 pub(crate) mod window;

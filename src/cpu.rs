@@ -1,9 +1,7 @@
-use std::sync::atomic::{AtomicI8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time;
 use sysinfo;
 use thiserror;
-use tokio::runtime;
 
 #[derive(Debug)]
 pub struct CPUStat {
@@ -38,7 +36,8 @@ pub enum MachineCPUStatProviderError {
 impl MachineCPUStatProvider {
     pub fn new() -> Result<Self, MachineCPUStatProviderError> {
         let mut sys = sysinfo::System::new();
-        sys.refresh_cpu_all();
+        sys.refresh_cpu_frequency();
+        sys.refresh_cpu_usage();
         let cpu_cores = sys.cpus().len() as u64;
         let frequency = sys
             .cpus()
@@ -106,8 +105,6 @@ impl EMACPUUsageLoader {
 }
 
 mod test {
-    use super::*;
-
     #[test]
     fn machine_cpu_stat_provider() {
         let mut provider = MachineCPUStatProvider::new().unwrap();
